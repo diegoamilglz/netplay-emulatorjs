@@ -1,0 +1,34 @@
+# Servicio de netplay.py (lo instala instalar.sh, que pone el dominio en lugar de TU_DOMINIO)
+[Unit]
+Description=Netplay de EmulatorJS (salas y señales WebRTC)
+After=network.target
+
+[Service]
+# Usuario temporal que crea systemd al arrancar: no tiene contraseña, ni shell, ni ficheros propios
+DynamicUser=yes
+# Secreto compartido con coturn (solo root puede leer el original); systemd le deja una copia al servicio
+LoadCredential=turn-secreto:/etc/netplay/turn-secreto
+ExecStart=/usr/bin/python3 -u /opt/netplay/netplay.py --host 127.0.0.1 --puerto 9082 \
+    --turn-secreto ${CREDENTIALS_DIRECTORY}/turn-secreto \
+    --turn-url turn:TU_DOMINIO:3478?transport=udp \
+    --turn-url turn:TU_DOMINIO:3478?transport=tcp
+Restart=on-failure
+RestartSec=5
+
+# No escribe en ningún sitio
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+
+# Red: solo hablar con Apache por loopback, sin poder salir a internet. El vídeo no pasa por
+# aquí: va directo de un navegador a otro por WebRTC
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

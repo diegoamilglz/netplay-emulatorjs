@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Juego en red</title>
+<style>
+  html, body { height: 100%; margin: 0; background: #000; }
+  #game { width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<script>
+(async () => {
+  // --- Cambia esto ---
+  const JUEGO = { nombre: 'Mi juego', core: 'n64', rom: 'roms/mi-juego.z64' };
+  // EmulatorJS 4.3 corregida con parchear-ejs43.sh. Con ruta entera: a una relativa, la 4.3 le pone "../"
+  // delante, que le vale para su código pero no para el CSS, los núcleos ni la ROM
+  const DATOS = new URL('data43/', location.href).pathname;
+  // Dónde llega netplay.py a través del proxy (ver el README)
+  const NETPLAY = new URL('netplay', location.href).href;
+
+  window.EJS_player = '#game';
+  window.EJS_core = JUEGO.core;
+  window.EJS_gameName = JUEGO.nombre;
+  window.EJS_gameUrl = JUEGO.rom;
+  window.EJS_pathtodata = DATOS;
+
+  // Número fijo por juego: el netplay lo pide, y así cada juego tiene su lista de salas
+  let n = 0;
+  for (const c of JUEGO.nombre) n = (n * 31 + c.charCodeAt(0)) % 1000000007;
+  window.EJS_gameID = n;
+  window.EJS_netplayServer = NETPLAY;
+  // STUN: para que cada navegador sepa su dirección pública. La partida no pasa por ellos
+  window.EJS_netplayICEServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+  // TURN propio: si los navegadores no conectan directamente (routers estrictos, datos móviles o los dos en
+  // la misma casa), la imagen pasa por él. netplay.py da un usuario y una contraseña que caducan en 24 h
+  try {
+    const r = await fetch(NETPLAY + '/turn', { cache: 'no-store' });
+    const turn = r.ok ? await r.json() : [];
+    if (Array.isArray(turn)) window.EJS_netplayICEServers.push(...turn);
+  } catch (e) { /* sin TURN solo conectan los que puedan hacerlo directamente */ }
+
+  // Sonido. Todo lo que va a los altavoces pasa antes por dos nodos por contexto de audio:
+  //   "maestro": lo que el netplay captura para los invitados. La 4.3 solo sabe capturar el sonido de los
+  //     núcleos con OpenAL o de un gameManager.audioNode; los de N64 (y otros) usan RWebAudio, con su
+  //     AudioContext dentro del núcleo, y el anfitrión mandaba la imagen sin sonido.
+  //   "volumen": lo que oye este navegador. La barra de volumen de EmulatorJS solo cambia el de OpenAL. Va
+  //     después del maestro, para que el volumen del anfitrión no cambie lo que oyen los invitados.
+  const conectar = AudioNode.prototype.connect;
+  const salidas = new Map();   // AudioContext -> { maestro, volumen }
+  let contextoJuego = null, volumenActual = 1;
+  const salida = ctx => {
+    let s = salidas.get(ctx);
+    if (!s) {
+      s = { maestro: ctx.createGain(), volumen: ctx.createGain() };
+      s.volumen.gain.value = volumenActual;
+      conectar.call(s.maestro, s.volumen);
+      conectar.call(s.volumen, ctx.destination);
+      salidas.set(ctx, s);
+    }
+    return s;
+  };
+  AudioNode.prototype.connect = function (destino, ...resto) {
+    if (destino instanceof AudioDestinationNode) {
+      if (this instanceof AudioBufferSourceNode) contextoJuego = destino.context;
+      conectar.call(this, salida(destino.context).maestro, ...resto);
+      return destino;
+    }
+    return conectar.call(this, destino, ...resto);
+  };
+  const aplicarVolumen = () => {
+    const em = window.EJS_emulator;
+    if (!em) return;
+    // Con OpenAL ya lo hace EmulatorJS, y en el invitado, el netplay ajusta el sonido que recibe
+    const propio = em.Module && em.Module.AL && em.Module.AL.currentCtx;
+    const invitado = em.isNetplay && em.netplay && !em.netplay.owner;
+    volumenActual = propio || invitado ? 1 : em.muted ? 0 : typeof em.volume === 'number' ? em.volume : 1;
+    for (const s of salidas.values()) {
+      if (s.volumen.gain.value !== volumenActual) s.volumen.gain.value = volumenActual;
+    }
+  };
+  setInterval(aplicarVolumen, 1000);   // por si cambia sin pasar por la barra (entrar o salir de una sala)
+
+  window.EJS_onGameStart = () => {
+    const em = window.EJS_emulator;
+    if (!em) return;
+    if (typeof em.setVolume === 'function') {
+      const original = em.setVolume;
+      em.setVolume = function () {
+        const r = original.apply(this, arguments);
+        aplicarVolumen();
+        return r;
+      };
+    }
+    aplicarVolumen();
+    // El netplay toma el sonido de aquí: el maestro del contexto donde suena el juego
+    if (em.gameManager) {
+      Object.defineProperty(em.gameManager, 'audioContext', { configurable: true, get: () => contextoJuego });
+      Object.defineProperty(em.gameManager, 'audioNode', { configurable: true,
+        get: () => contextoJuego ? salida(contextoJuego).maestro : null });
+    }
+  };
+
+  const s = document.createElement('script');
+  s.src = DATOS + 'loader.js';
+  document.body.appendChild(s);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+# /etc/cron.d/turn-ip: mantiene al día la IP pública de coturn (ver turn-ip.sh)
+*/5 * * * * root /usr/local/bin/turn-ip.sh
+@reboot root sleep 60 && /usr/local/bin/turn-ip.sh
